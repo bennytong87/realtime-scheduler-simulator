@@ -1,0 +1,19 @@
+# Executables
+periodic_scheduler/periodic_scheduler
+server_scheduler/server_scheduler
+*.exe
+
+# Object files
+*.o
+*.obj
+
+# Editor settings
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+
+# Test outputs
+*.out
