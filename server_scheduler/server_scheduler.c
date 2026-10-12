@@ -6,10 +6,14 @@
  *   - Total Bandwidth Server (TBS)
  *
  * Input:
- *   - periodic file: Period , WCET
- *   - aperiodic file: ArrivalTime , ExecutionTime
+ *   - periodic file:   Period , WCET
+ *   - aperiodic file:  ArrivalTime , ExecutionTime
  *
+ * Build: gcc -Wall -Wextra -O2 -o server_scheduler server_scheduler.c -lm
  * Usage: ./server_scheduler <CUS|TBS> <periodic_file> <aperiodic_file>
+ *
+ * Author: Benny Tong
+ * Date: 2026-10
  */
 
 #include <stdio.h>
@@ -17,12 +21,29 @@
 #include <string.h>
 #include <math.h>
 
+/* ===== Structures ===== */
+
+/*
+ * Task - A periodic task specification.
+ *
+ * @tid:    task ID (1-based)
+ * @period: interval between consecutive releases
+ * @wcet:   worst-case execution time
+ */
 typedef struct {
     int tid;
     int period;
     int wcet;
 } Task;
 
+/*
+ * Job - A released instance of a periodic task.
+ *
+ * @tid:      owning task ID
+ * @deadline: absolute deadline (release + period)
+ * @remain:   remaining execution time
+ * @next:     linked list pointer
+ */
 typedef struct Job {
     int tid;
     int deadline;
@@ -30,6 +51,14 @@ typedef struct Job {
     struct Job *next;
 } Job;
 
+/*
+ * AJob - A released instance of an aperiodic task.
+ *
+ * @arrival:   arrival time of the aperiodic job
+ * @remain:    remaining execution time
+ * @exe_time:  original execution time
+ * @next:      linked list pointer
+ */
 typedef struct AJob {
     int arrival;
     int remain;
@@ -37,18 +66,28 @@ typedef struct AJob {
     struct AJob *next;
 } AJob;
 
+/*
+ * AInputData - Raw input record for an aperiodic task.
+ *
+ * @arrival: arrival time
+ * @remain:  execution time
+ */
 typedef struct {
     int arrival;
     int remain;
 } AInputData;
+
+/* ===== Global Variables ===== */
 
 Task P_Tasks[100];
 int P_Count = 0;
 AInputData *A_Input = NULL;
 int A_Input_Count = 0;
 
-/**
- * compare_ajobs - qsort comparator for aperiodic input by arrival time.
+/* ===== Comparators ===== */
+
+/*
+ * compare_ajobs - qsort comparator: sort aperiodic inputs by arrival time.
  */
 int compare_ajobs(const void *a, const void *b) {
     AInputData *ia = (AInputData *)a;
@@ -56,14 +95,27 @@ int compare_ajobs(const void *a, const void *b) {
     return ia->arrival - ib->arrival;
 }
 
-/**
+/* ===== File Loading ===== */
+
+/*
  * read_files - Read periodic and aperiodic task files.
+ *
+ * Periodic format:   "Period , WCET" per line
+ * Aperiodic format:  "ArrivalTime , ExecutionTime" per line
+ *
+ * Sorts aperiodic input by arrival time so the simulation loop can
+ * consume arrivals in order with a single index.
+ *
+ * @p_path: path to periodic file
+ * @a_path: path to aperiodic file
  */
 void read_files(const char* p_path, const char* a_path) {
     FILE *fp = fopen(p_path, "r");
     P_Count = 0;
     if (fp) {
-        while (fscanf(fp, "%d,%d", &P_Tasks[P_Count].period, &P_Tasks[P_Count].wcet) != EOF) {
+        while (fscanf(fp, "%d,%d",
+                      &P_Tasks[P_Count].period,
+                      &P_Tasks[P_Count].wcet) != EOF) {
             P_Tasks[P_Count].tid = P_Count + 1;
             P_Count++;
         }
@@ -91,8 +143,23 @@ void read_files(const char* p_path, const char* a_path) {
     }
 }
 
-/**
+/* ===== Simulation ===== */
+
+/*
  * simulate - Run CUS or TBS server simulation.
+ *
+ * Algorithm (per tick):
+ *   1. Remove periodic jobs whose deadlines have passed.
+ *   2. Release new periodic jobs at period boundaries.
+ *   3. Admit aperiodic jobs and assign a server deadline/budget:
+ *        CUS: on budget exhaustion, recharge with new budget.
+ *        TBS: on aperiodic arrival, extend server deadline by
+ *             budget / us (us = server bandwidth).
+ *   4. Choose the highest-priority periodic job (earliest deadline).
+ *   5. Decide whether the server or the periodic job runs:
+ *        server runs if s_deadline <= best_p->deadline.
+ *
+ * @mode: 1 = CUS, 2 = TBS
  */
 void simulate(int mode) {
     int clock = 0;
@@ -100,67 +167,88 @@ void simulate(int mode) {
     long long total_resp = 0;
     int a_idx = 0;
 
-    Job *PQ = NULL;
-    AJob *AQ = NULL;
+    Job  *PQ = NULL;   /* periodic ready queue */
+    AJob *AQ = NULL;   /* aperiodic queue */
 
     int s_deadline = 0;
-    int s_budget = 0;
-    const int max_sim_time = 1000;
-    const double us = 0.2;
+    int s_budget   = 0;
+
+    const int    max_sim_time = 1000;
+    const double us           = 0.2;   /* server utilization */
 
     while (clock <= max_sim_time) {
+
+        /* ===== 1. Deadline miss check for periodic jobs ===== */
         Job *curr_p = PQ, *prev_p = NULL;
         while (curr_p) {
             if (curr_p->deadline - clock - curr_p->remain <= 0) {
                 miss_p++;
                 Job *tmp = curr_p;
-                if (prev_p) prev_p->next = curr_p->next; else PQ = curr_p->next;
+                if (prev_p) prev_p->next = curr_p->next;
+                else        PQ           = curr_p->next;
                 curr_p = curr_p->next;
                 free(tmp);
             } else {
-                prev_p = curr_p; curr_p = curr_p->next;
+                prev_p = curr_p;
+                curr_p = curr_p->next;
             }
         }
 
+        /* ===== 2. Release periodic jobs ===== */
         for (int i = 0; i < P_Count; i++) {
             if (clock % P_Tasks[i].period == 0 && clock < max_sim_time) {
                 Job *nj = malloc(sizeof(Job));
-                nj->tid = P_Tasks[i].tid;
-                nj->remain = P_Tasks[i].wcet;
+                nj->tid      = P_Tasks[i].tid;
+                nj->remain   = P_Tasks[i].wcet;
                 nj->deadline = clock + P_Tasks[i].period;
-                nj->next = PQ; PQ = nj;
+                nj->next     = PQ;
+                PQ = nj;
                 total_p++;
             }
         }
 
+        /* ===== 3. Admit arriving aperiodic jobs ===== */
         while (a_idx < A_Input_Count && A_Input[a_idx].arrival == clock) {
             AJob *nj = malloc(sizeof(AJob));
-            nj->arrival = A_Input[a_idx].arrival;
-            nj->remain = A_Input[a_idx].remain;
+            nj->arrival  = A_Input[a_idx].arrival;
+            nj->remain   = A_Input[a_idx].remain;
             nj->exe_time = A_Input[a_idx].remain;
-            nj->next = NULL;
+            nj->next     = NULL;
 
             int was_empty = (AQ == NULL);
-            if (!AQ) AQ = nj;
-            else { AJob *t = AQ; while(t->next) t=t->next; t->next = nj; }
+            if (!AQ) {
+                AQ = nj;
+            } else {
+                AJob *t = AQ;
+                while (t->next) t = t->next;
+                t->next = nj;
+            }
 
+            /*
+             * Assign a server deadline/budget when the aperiodic queue
+             * transitions from empty to non-empty.
+             *   CUS: only when the previous budget has been exhausted
+             *        (clock >= s_deadline).
+             *   TBS: always, extending from max(s_deadline, clock).
+             */
             if (was_empty) {
                 if (mode == 1) {
                     if (clock >= s_deadline) {
-                        s_budget = AQ->remain;
+                        s_budget   = AQ->remain;
                         s_deadline = clock + (int)(s_budget / us);
                     }
                 } else {
-                    s_budget = AQ->remain;
-                    int base = (s_deadline > clock) ? s_deadline : clock;
+                    s_budget   = AQ->remain;
+                    int base   = (s_deadline > clock) ? s_deadline : clock;
                     s_deadline = base + (int)(s_budget / us);
                 }
             }
             a_idx++;
         }
 
+        /* CUS recharge: when the current budget expires, refill it */
         if (mode == 1 && AQ && clock == s_deadline) {
-            s_budget = AQ->remain;
+            s_budget   = AQ->remain;
             s_deadline = clock + (int)(s_budget / us);
         }
 
@@ -168,17 +256,24 @@ void simulate(int mode) {
 
         if (clock == max_sim_time) break;
 
+        /* ===== 4. Find highest-priority periodic job (EDF) ===== */
         Job *best_p = NULL;
         Job *it = PQ;
         while (it) {
             if (!best_p || it->deadline < best_p->deadline ||
-               (it->deadline == best_p->deadline && it->tid < best_p->tid)) {
+                (it->deadline == best_p->deadline && it->tid < best_p->tid)) {
                 best_p = it;
             }
             it = it->next;
         }
 
-        int run_server = (AQ && s_budget > 0 && (best_p == NULL || s_deadline <= best_p->deadline));
+        /*
+         * ===== 5. Decide who runs this tick =====
+         * The server runs iff it has budget AND its deadline is
+         * earlier than (or equal to) the periodic EDF candidate.
+         */
+        int run_server = (AQ && s_budget > 0 &&
+                          (best_p == NULL || s_deadline <= best_p->deadline));
 
         if (run_server) {
             AQ->remain--;
@@ -190,8 +285,13 @@ void simulate(int mode) {
                 AQ = AQ->next;
                 free(tmp);
 
+                /*
+                 * TBS: chain the next aperiodic job onto the server
+                 * by extending the current deadline.
+                 * CUS: budget only recharges at deadline, so clear it.
+                 */
                 if (mode == 2 && AQ) {
-                    s_budget = AQ->remain;
+                    s_budget    = AQ->remain;
                     s_deadline += (int)(s_budget / us);
                 } else {
                     s_budget = 0;
@@ -202,7 +302,8 @@ void simulate(int mode) {
             if (best_p->remain == 0) {
                 Job *c = PQ, *p = NULL;
                 while (c != best_p) { p = c; c = c->next; }
-                if (p) p->next = c->next; else PQ = c->next;
+                if (p) p->next = c->next;
+                else   PQ      = c->next;
                 free(c);
             }
         }
@@ -213,12 +314,16 @@ void simulate(int mode) {
     printf("RESULT_TOTAL_P=%d\n", total_p);
     printf("RESULT_MISS_P=%d\n", miss_p);
     printf("RESULT_FINISHED_A=%d\n", finished_a);
-    printf("RESULT_AVG_RESP=%.4f\n", finished_a > 0 ? (double)total_resp / finished_a : 0);
+    printf("RESULT_AVG_RESP=%.4f\n",
+           finished_a > 0 ? (double)total_resp / finished_a : 0);
 }
+
+/* ===== Main ===== */
 
 int main(int argc, char *argv[]) {
     if (argc < 4) {
-        printf("Usage: %s <CUS|TBS> <periodic_file> <aperiodic_file>\n", argv[0]);
+        printf("Usage: %s <CUS|TBS> <periodic_file> <aperiodic_file>\n",
+               argv[0]);
         return 0;
     }
 
