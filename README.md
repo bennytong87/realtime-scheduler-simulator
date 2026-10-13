@@ -141,7 +141,7 @@ See docs/theory.md for:
 
 ## Relation to Industry
 
-TSMC's CIM system handles dispatching, scheduling, and automation in fabs.
+CIM system handles dispatching, scheduling, and automation in fabs.
 
 | This project | CIM counterpart |
 |---|---|
