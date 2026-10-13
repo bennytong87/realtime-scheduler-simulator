@@ -11,9 +11,6 @@
  *
  * Build: gcc -Wall -Wextra -O2 -o server_scheduler server_scheduler.c -lm
  * Usage: ./server_scheduler <CUS|TBS> <periodic_file> <aperiodic_file>
- *
- * Author: Benny Tong
- * Date: 2026-10
  */
 
 #include <stdio.h>
