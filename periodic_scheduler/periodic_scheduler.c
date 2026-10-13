@@ -11,9 +11,6 @@
  * Build: gcc -Wall -Wextra -O2 -o periodic_scheduler periodic_scheduler.c -lm
  * Usage: ./periodic_scheduler <task_file> <algorithm>
  *        algorithm: 1=RM, 2=EDF, 3=LST
- *
- * Author: Benny Tong
- * Date: 2026-10
  */
 
 #include <stdio.h>
